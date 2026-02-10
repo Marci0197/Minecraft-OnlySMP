@@ -191,19 +191,27 @@ window.copyIP = function () {
 
 // --- Socket Listeners ---
 
-socket.on('playerJoined', (newPlayer) => {
-    allPlayers.push(newPlayer);
+socket.on('playerListUpdate', (players) => {
+    // Replace full list
+    allPlayers = players;
     updateUI();
-    // Notification could go here
-    console.log("New player:", newPlayer.name);
+});
+
+socket.on('playerJoined', (newPlayer) => {
+    // Legacy support or single redundant update
+    const exists = allPlayers.find(p => p.id === newPlayer.id);
+    if (!exists) {
+        allPlayers.push(newPlayer);
+        updateUI();
+    }
 });
 
 socket.on('killUpdated', (data) => {
-    // Update local state
-    const killer = allPlayers.find(p => p.id === data.killerId);
+    // Update local state by Name since IDs might regenerate on fetch
+    const killer = allPlayers.find(p => p.name === data.killerName);
     if (killer) killer.kills = data.newKills;
 
-    const victim = allPlayers.find(p => p.id === data.victimId);
+    const victim = allPlayers.find(p => p.name === data.victimName);
     if (victim) victim.deaths = data.newDeaths;
 
     renderLeaderboard(); // Re-sort and render
@@ -215,19 +223,81 @@ socket.on('deathAdded', (newDeath) => {
     if (noDeathsMsg) noDeathsMsg.style.display = 'none';
 
     const html = createDeathItemHTML(newDeath);
-    deathFeed.insertAdjacentHTML('afterbegin', html);
+    if (deathFeed) {
+        deathFeed.insertAdjacentHTML('afterbegin', html);
+        // Animate the new entry
+        gsap.from(deathFeed.firstElementChild, {
+            height: 0,
+            opacity: 0,
+            x: -20,
+            duration: 0.5,
+            clearProps: "all"
+        });
+    }
 
-    // Animate the new entry
-    gsap.from(deathFeed.firstElementChild, {
-        height: 0,
-        opacity: 0,
-        x: -20,
-        duration: 0.5,
-        clearProps: "all"
-    });
+    // Trigger Death Screen
+    showDeathScreen(newDeath);
 });
 
 socket.on('deathsReset', () => {
     deaths = [];
     renderDeathFeed();
 });
+
+// --- Death Screen Logic ---
+function showDeathScreen(death) {
+    const screen = document.getElementById('death-screen');
+    const content = document.getElementById('death-content');
+    const victimImg = document.getElementById('death-victim-img');
+    const victimName = document.getElementById('death-victim-name');
+    const killerContainer = document.getElementById('death-killer-container');
+    const killerImg = document.getElementById('death-killer-img');
+    const killerName = document.getElementById('death-killer-name');
+    const msg = document.getElementById('death-message');
+
+    if (!screen || !content) return;
+
+    // 1. Setup Data
+    victimName.innerText = death.victimName;
+    victimImg.src = `https://mc-heads.net/avatar/${death.victimName}`;
+
+    if (death.killerName) {
+        killerContainer.style.display = 'flex';
+        killerName.innerText = death.killerName;
+        killerImg.src = `https://mc-heads.net/avatar/${death.killerName}`;
+    } else {
+        // Environmental / Mob (if we mapped mobs to heads later)
+        // For now, hide second head or show a generic block?
+        // simple: hide killer container if null
+        killerContainer.style.display = 'none';
+        // Or show specific icon based on cause?
+        // For now, hide.
+    }
+
+    msg.innerText = death.message;
+
+    // 2. Show Screen
+    screen.classList.remove('hidden');
+
+    // 3. Animate In
+    gsap.to(content, {
+        scale: 1,
+        opacity: 1,
+        duration: 0.5,
+        ease: "back.out(1.7)"
+    });
+
+    // 4. Play Sound? (Optional)
+
+    // 5. Hide after 4 seconds
+    setTimeout(() => {
+        gsap.to(content, {
+            scale: 0.8,
+            opacity: 0,
+            duration: 0.3,
+            onComplete: () => {
+                screen.classList.add('hidden');
+            }
+        });
+    }, 4000);
+}

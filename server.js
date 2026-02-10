@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const cron = require('node-cron');
 const { v4: uuidv4 } = require('uuid');
+const util = require('minecraft-server-util');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,11 +18,17 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.static('public'));
 
-// --- Mock Data Store ---
+// --- Configuration ---
+const MC_SERVER_HOST = 'onlysmp.ddns.net';
+const MC_SERVER_PORT = 25567; // Query Port
+
+// --- Data Store ---
 let players = [];
 let deaths = [];
 
-// No initial data - server starts empty
+// Persistent Stats (Store kills/deaths even if player goes offline)
+// Key: Player Name, Value: { kills: 0, deaths: 0 }
+const playerStats = new Map();
 
 const deathCauses = [
     "was blown up by Creeper",
@@ -36,6 +43,14 @@ const deathCauses = [
     "hit the ground too hard"
 ];
 
+// --- Helper Functions ---
+function getPlayerStats(name) {
+    if (!playerStats.has(name)) {
+        playerStats.set(name, { kills: 0, deaths: 0 });
+    }
+    return playerStats.get(name);
+}
+
 // --- Scheduled Tasks ---
 cron.schedule('0 0 * * *', () => {
     console.log('Resetting daily death list...');
@@ -49,132 +64,177 @@ app.get('/api/players', (req, res) => {
 });
 
 app.get('/api/leaderboard/kills', (req, res) => {
-    const sortedPlayers = [...players].sort((a, b) => b.kills - a.kills);
-    res.json(sortedPlayers);
+    // Convert current players list + potentially offline high-scorers (optional, for now just active)
+    // To include everyone seen since server start, we could iterate playerStats. 
+    // For simplicity, we stick to "Active Players" list for the main grid, but the leaderboard could come from stats.
+    // Let's mix: All active players + anyone in stats with > 0 kills
+
+    const leaderboard = [];
+    playerStats.forEach((stats, name) => {
+        leaderboard.push({ name, ...stats });
+    });
+
+    // Sort
+    const sorted = leaderboard.sort((a, b) => b.kills - a.kills);
+    res.json(sorted);
 });
 
 app.get('/api/deaths/today', (req, res) => {
-    // Return deaths sorted by latest
     const sortedDeaths = [...deaths].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     res.json(sortedDeaths);
 });
 
-// Test Endpoint to trigger events manually
-app.post('/api/test-event', (req, res) => {
-    const eventType = Math.random();
-    let result = {};
+// --- Fetch Real Players ---
+async function updatePlayersObject() {
+    try {
+        const result = await util.queryFull(MC_SERVER_HOST, MC_SERVER_PORT);
+        const onlinePlayerNames = result.players.list || [];
 
-    if (eventType < 0.5) {
-        // Trigger Kill
-        const killerIndex = Math.floor(Math.random() * players.length);
-        const victimIndex = Math.floor(Math.random() * players.length);
-
-        if (killerIndex !== victimIndex) {
-            players[killerIndex].kills += 1;
-            players[victimIndex].deaths += 1;
-
-            const killData = {
-                killerId: players[killerIndex].id,
-                newKills: players[killerIndex].kills,
-                victimId: players[victimIndex].id,
-                newDeaths: players[victimIndex].deaths
+        // Map to our player object format
+        const currentPlayers = onlinePlayerNames.map(name => {
+            const stats = getPlayerStats(name);
+            return {
+                id: uuidv4(), // Generate a temp session ID (or hash name for stability if needed)
+                name: name,
+                kills: stats.kills,
+                deaths: stats.deaths,
+                joinedAt: new Date().toISOString() // In a real app we'd track session start
             };
+        });
 
-            io.emit('killUpdated', killData);
+        // Update global list
+        players = currentPlayers;
+
+        // Broadcast the real list
+        io.emit('playerListUpdate', players);
+
+        console.log(`Updated players: ${players.length} online.`);
+    } catch (error) {
+        console.error('Failed to query Minecraft Server:', error.message);
+        // On error, we might want to clear the list or keep last known state. 
+        // Clearing it usually safer so we don't show ghosts.
+        if (players.length > 0) {
+            players = [];
+            io.emit('playerListUpdate', players);
+        }
+    }
+}
+
+// --- Test Endpoint (For Verification) ---
+app.post('/api/test-event', (req, res) => {
+    // Force a death event for testing
+    const fakeVictim = { name: "Test_Victim", id: uuidv4() };
+    const fakeKiller = { name: "Test_Killer", id: uuidv4() };
+
+    const newDeath = {
+        id: uuidv4(),
+        victimId: fakeVictim.id,
+        victimName: fakeVictim.name,
+        killerName: fakeKiller.name,
+        timestamp: new Date().toISOString(),
+        message: `${fakeVictim.name} was slain by ${fakeKiller.name} (TEST)`
+    };
+
+    io.emit('deathAdded', newDeath);
+    res.json({ success: true, message: "Test death event triggered", data: newDeath });
+});
+
+// --- Simulation Loop (Kills/Deaths ONLY for Online Players) ---
+setInterval(() => {
+    // 1. Fetch Real Players
+    updatePlayersObject();
+
+    // 2. Simulate Events if we have players
+    if (players.length >= 2) {
+        const eventType = Math.random();
+
+        // 20% chance of a kill event every 5s if players exist
+        if (eventType < 0.2) {
+            const killerIndex = Math.floor(Math.random() * players.length);
+            const victimIndex = Math.floor(Math.random() * players.length);
+
+            if (killerIndex !== victimIndex) {
+                const killer = players[killerIndex];
+                const victim = players[victimIndex];
+
+                // Update Stats
+                const killerStats = getPlayerStats(killer.name);
+                const victimStats = getPlayerStats(victim.name);
+
+                killerStats.kills += 1;
+                victimStats.deaths += 1;
+
+                // Sync back to current objects
+                killer.kills = killerStats.kills;
+                victim.deaths = victimStats.deaths;
+
+                // Emit Kill Update
+                io.emit('killUpdated', {
+                    killerName: killer.name, // Use Names for matching now
+                    newKills: killer.kills,
+                    victimName: victim.name,
+                    newDeaths: victim.deaths
+                });
+
+                // Create Death Event
+                const newDeath = {
+                    id: uuidv4(),
+                    victimId: victim.id,
+                    victimName: victim.name,
+                    killerName: killer.name,
+                    timestamp: new Date().toISOString(),
+                    message: `${victim.name} was slain by ${killer.name}`
+                };
+
+                deaths.unshift(newDeath);
+                if (deaths.length > 100) deaths.pop();
+
+                io.emit('deathAdded', newDeath);
+                console.log(`[SIM] Kill: ${killer.name} -> ${victim.name}`);
+            }
+        } else if (eventType < 0.25) {
+            // 5% Chance of random environmental death
+            const victimIndex = Math.floor(Math.random() * players.length);
+            const victim = players[victimIndex];
+            const stats = getPlayerStats(victim.name);
+            stats.deaths += 1;
+            victim.deaths = stats.deaths;
+
+            const cause = deathCauses[Math.floor(Math.random() * deathCauses.length)];
+
+            io.emit('killUpdated', {
+                victimName: victim.name,
+                newDeaths: victim.deaths
+            });
 
             const newDeath = {
                 id: uuidv4(),
-                victimId: players[victimIndex].id,
-                victimName: players[victimIndex].name,
-                killerName: players[killerIndex].name,
+                victimId: victim.id,
+                victimName: victim.name,
+                killerName: null, // No killer
+                cause: cause,
                 timestamp: new Date().toISOString(),
-                message: `${players[victimIndex].name} was slain by ${players[killerIndex].name}`
+                message: `${victim.name} ${cause}`
             };
+
             deaths.unshift(newDeath);
             if (deaths.length > 100) deaths.pop();
-
             io.emit('deathAdded', newDeath);
-            result = { type: 'kill', data: newDeath };
-        } else {
-            return res.status(400).json({ error: "Failed to generate valid kill (self-kill)" });
+            console.log(`[SIM] Env Death: ${victim.name}`);
         }
-    } else {
-        // Trigger Join
-        const newPlayerName = `Guest_${Math.floor(Math.random() * 9000) + 1000}`;
-        const newPlayer = {
-            id: uuidv4(),
-            name: newPlayerName,
-            kills: 0,
-            deaths: 0,
-            joinedAt: new Date().toISOString()
-        };
-        players.push(newPlayer);
-        io.emit('playerJoined', newPlayer);
-        result = { type: 'join', data: newPlayer };
     }
-
-    res.json({ success: true, event: result });
-});
+}, 5000);
 
 // --- Socket.io Events ---
 io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
+    socket.emit('playerListUpdate', players); // Send immediate state
     socket.on('disconnect', () => console.log('Client disconnected:', socket.id));
 });
-
-// --- Simulation ---
-setInterval(() => {
-    const eventType = Math.random();
-
-    if (eventType < 0.4) { // Increased frequency for demo life
-        // Kill Event
-        const killerIndex = Math.floor(Math.random() * players.length);
-        const victimIndex = Math.floor(Math.random() * players.length);
-
-        if (killerIndex !== victimIndex) {
-            players[killerIndex].kills += 1;
-            players[victimIndex].deaths += 1;
-
-            io.emit('killUpdated', {
-                killerId: players[killerIndex].id,
-                newKills: players[killerIndex].kills,
-                victimId: players[victimIndex].id,
-                newDeaths: players[victimIndex].deaths
-            });
-
-            // Update deaths
-            const newDeath = {
-                id: uuidv4(),
-                victimId: players[victimIndex].id,
-                victimName: players[victimIndex].name,
-                killerName: players[killerIndex].name,
-                timestamp: new Date().toISOString(),
-                message: `${players[victimIndex].name} was slain by ${players[killerIndex].name}`
-            };
-
-            deaths.unshift(newDeath);
-            // Keep death list manageable in memory
-            if (deaths.length > 100) deaths.pop();
-
-            io.emit('deathAdded', newDeath);
-        }
-    } else if (eventType < 0.05) {
-        // Player Join (Rare)
-        // reuse existing names logic or create generic ones if we run out (for demo we just add Guest)
-        const newPlayerName = `Guest_${Math.floor(Math.random() * 9000) + 1000}`;
-        const newPlayer = {
-            id: uuidv4(),
-            name: newPlayerName,
-            kills: 0,
-            deaths: 0,
-            joinedAt: new Date().toISOString()
-        };
-        players.push(newPlayer);
-        io.emit('playerJoined', newPlayer);
-    }
-}, 5000); // More frequent updates (every 5s) for better "alive" feeling
 
 const PORT = 3000;
 server.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    // Initial fetch
+    updatePlayersObject();
 });
