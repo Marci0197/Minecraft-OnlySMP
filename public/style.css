@@ -1,0 +1,92 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
+
+body {
+    font-family: 'Outfit', sans-serif;
+    background-color: #050505;
+    color: #ffffff;
+    overflow-x: hidden;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #0a0a0a; 
+}
+::-webkit-scrollbar-thumb {
+    background: #333; 
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #4ade80; /* Tailwind green-400 */
+}
+
+/* Neon Utilities */
+.neon-text-green {
+    text-shadow: 0 0 10px rgba(74, 222, 128, 0.5), 0 0 20px rgba(74, 222, 128, 0.3);
+}
+
+.neon-border-green {
+    box-shadow: 0 0 15px rgba(74, 222, 128, 0.3);
+    border: 1px solid rgba(74, 222, 128, 0.5);
+}
+
+.neon-text-purple {
+    text-shadow: 0 0 10px rgba(168, 85, 247, 0.5), 0 0 20px rgba(168, 85, 247, 0.3);
+}
+
+.glass-panel {
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.hero-bg {
+    background: radial-gradient(circle at 50% 50%, rgba(20, 20, 30, 0.8) 0%, rgba(5, 5, 5, 1) 100%),
+                url('https://images.unsplash.com/photo-1599590680407-742718d7f7e9?q=80&w=2670&auto=format&fit=crop') no-repeat center center/cover;
+}
+
+.player-card {
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.player-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px rgba(74, 222, 128, 0.2);
+}
+
+/* Grid Background Animation */
+.grid-bg {
+    background-size: 50px 50px;
+    background-image:
+        linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+    animation: moveGrid 20s linear infinite;
+}
+
+@keyframes moveGrid {
+    0% { background-position: 0 0; }
+    100% { background-position: 50px 50px; }
+}
+
+/* Rank Colors */
+.rank-1 { color: #fbbf24; text-shadow: 0 0 10px rgba(251, 191, 36, 0.6); } /* Gold */
+.rank-2 { color: #94a3b8; text-shadow: 0 0 10px rgba(148, 163, 184, 0.6); } /* Silver */
+.rank-3 { color: #b45309; text-shadow: 0 0 10px rgba(180, 83, 9, 0.6); } /* Bronze */
+
+/* Animations */
+@keyframes pulse-glow {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.8; transform: scale(1.05); }
+}
+
+.server-online-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #4ade80;
+    box-shadow: 0 0 10px #4ade80;
+    animation: pulse-glow 2s infinite;
+}
